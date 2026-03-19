@@ -50,6 +50,35 @@ function getTier(price) {
   return "high";
 }
 
+// Clean and validate ticker symbols
+// Removes anything that isn't letters (A-Z)
+// Rejects tickers with numbers, spaces, or longer than 5 chars
+function cleanTicker(ticker) {
+  if (!ticker || typeof ticker !== "string") return null;
+  // Remove any non-letter characters
+  const cleaned = ticker.replace(/[^A-Z]/gi, "").toUpperCase();
+  // Valid US tickers are 1-5 capital letters only
+  if (cleaned.length < 1 || cleaned.length > 5) return null;
+  // Reject if original had numbers mixed in (like GOOGL9, NVDA1)
+  if (/\d/.test(ticker)) return null;
+  return cleaned;
+}
+
+// Filter and deduplicate a list of tickers
+function validateTickers(tickers) {
+  if (!Array.isArray(tickers)) return [];
+  const seen = new Set();
+  const valid = [];
+  for (const t of tickers) {
+    const clean = cleanTicker(t);
+    if (clean && !seen.has(clean)) {
+      seen.add(clean);
+      valid.push(clean);
+    }
+  }
+  return valid;
+}
+
 function getTierWeights(tier) {
   if (tier === "low")  return "Momentum(25) Volume(25) Catalyst(20) Sentiment(15) Risk(15)";
   if (tier === "mid")  return "Momentum(20) Volume(20) Catalyst(20) Technical(20) Sentiment(20)";
@@ -759,21 +788,23 @@ LOW=$0.10-$3, MID=$3.01-$50, HIGH=$50.01+. Real US tickers only.`,
     const seen       = new Set();
 
     for (const stock of allMovers) {
-      if (!stock.ticker || seen.has(stock.ticker)) continue;
-      seen.add(stock.ticker);
+      const clean = cleanTicker(stock.ticker);
+      if (!clean || seen.has(clean)) continue;
+      seen.add(clean);
       const tier = getTier(stock.price);
-      if (candidates[tier].length < 8) candidates[tier].push(stock.ticker);
+      if (candidates[tier].length < 8) candidates[tier].push(clean);
     }
 
     if (aiDiscovery) {
       for (const tier of ["low", "mid", "high"]) {
-        for (const t of (aiDiscovery[tier] || [])) {
-          const upper = t.toUpperCase();
-          if (!candidates[tier].includes(upper) && candidates[tier].length < 12) {
-            candidates[tier].push(upper);
+        const validAITickers = validateTickers(aiDiscovery[tier] || []);
+        for (const t of validAITickers) {
+          if (!candidates[tier].includes(t) && candidates[tier].length < 12) {
+            candidates[tier].push(t);
           }
         }
       }
+    }
     }
 
     const fallback = {

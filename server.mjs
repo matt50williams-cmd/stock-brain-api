@@ -805,7 +805,6 @@ LOW=$0.10-$3, MID=$3.01-$50, HIGH=$50.01+. Real US tickers only.`,
         }
       }
     }
-    }
 
     const fallback = {
       low:  ["SNDL", "CLOV", "TELL", "HIMS", "GSAT", "SENS"],

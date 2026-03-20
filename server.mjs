@@ -492,7 +492,7 @@ async function collectStockData(symbol) {
 // IN-MEMORY STORAGE + FILE PERSISTENCE
 // Saves to disk so data survives Render restarts
 // ============================================
-const CACHE_FILE = "/tmp/last_scan_results.json";
+const CACHE_FILE = "./scan_cache.json";
 
 function saveScanResults(results) {
   try {
@@ -964,10 +964,63 @@ Return ONLY JSON: [{"ticker":"","score":0,"buy_price":0,"sell_price":0,"risk":""
         stock.updated_at  = new Date().toISOString();
       }
 
-      results[tier] = tierPicks.slice(0, 5);
+      // STRICT TIER VALIDATION — remove any stock that doesn't belong in this tier
+      // This prevents AI from putting $17 stocks in "low" tier or $0.03 stocks in "high" tier
+      const validTierPicks = tierPicks.filter((stock) => {
+        const price = stock.current_price;
+        if (!price || price <= 0) return false;
+        const correctTier = getTier(price);
+        if (correctTier !== tier) {
+          console.log(`Tier mismatch: ${stock.ticker} at $${price} belongs in ${correctTier} not ${tier} — removing`);
+          return false;
+        }
+        return true;
+      });
+
+      // If we don't have enough after filtering, use fallback stocks from the correct tier
+      if (validTierPicks.length < 3) {
+        console.log(`Only ${validTierPicks.length} valid ${tier} stocks after validation — using fallback`);
+        const fallbackTickers = fallback[tier].filter((t) => !validTierPicks.some((s) => s.ticker === t));
+        for (const ticker of fallbackTickers.slice(0, 5 - validTierPicks.length)) {
+          try {
+            await delay(200);
+            const data = await collectStockData(ticker);
+            if (data && getTier(data.current_price) === tier) {
+              validTierPicks.push({
+                ticker: data.ticker,
+                company_name: data.company_name,
+                current_price: data.current_price,
+                buy_price: 0,
+                sell_price: 0,
+                score: 50,
+                summary: "Fallback pick",
+                reasons: [],
+                tier,
+                is_hot_pick: false,
+                updated_at: new Date().toISOString(),
+                ...data,
+              });
+            }
+          } catch { continue; }
+        }
+      }
+
+      results[tier] = validTierPicks.slice(0, 5);
     }
 
     const allStocks = [...results.low, ...results.mid, ...results.high];
+    
+    // Remove any duplicate tickers across tiers — keep highest scored version
+    const seenTickers = new Set();
+    const deduped = allStocks.filter((s) => {
+      if (seenTickers.has(s.ticker)) return false;
+      seenTickers.add(s.ticker);
+      return true;
+    });
+    // Rebuild tier arrays without duplicates
+    results.low  = deduped.filter((s) => s.tier === "low");
+    results.mid  = deduped.filter((s) => s.tier === "mid");
+    results.high = deduped.filter((s) => s.tier === "high");
     const hotPicks  = allStocks.filter((s) => s.is_hot_pick);
 
     // STEP 4: Grok X/Twitter sentiment on the final picks (one call, all 15)

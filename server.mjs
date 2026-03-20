@@ -1353,3 +1353,4 @@ async function refreshPricesInBackground() {
 // Start the 30-second background refresh
 setInterval(refreshPricesInBackground, 30000);
 console.log("Background price refresh armed — every 30 seconds during market hours");
+

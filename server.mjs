@@ -85,6 +85,13 @@ function getTierWeights(tier) {
   return "Trend(25) Earnings(20) Institutional(20) Technical(20) Sector(15)";
 }
 
+// Always ensure low_range < high_range — swap if needed
+function fixPriceRange(buyPrice, sellPrice) {
+  const low  = Math.min(buyPrice || 0, sellPrice || 0);
+  const high = Math.max(buyPrice || 0, sellPrice || 0);
+  return { low_range: low, high_range: high };
+}
+
 // MA signal interpreter — gives plain-English context
 function interpretMAs(price, ma20, ma50, ma200) {
   const signals = [];
@@ -252,15 +259,18 @@ async function getOptionsActivity(symbol) {
 async function getMovingAverages(symbol) {
   try {
     const to   = Math.floor(Date.now() / 1000);
-    const from = Math.floor((Date.now() - 280 * 86400000) / 1000); // 280 days back = covers 200 trading days
+    // 400 days back to ensure enough data for 200MA
+    const from = Math.floor((Date.now() - 400 * 86400000) / 1000);
 
     const d = await finnhubGet("/stock/candle", { symbol, resolution: "D", from, to });
-    if (!d || d.s !== "ok" || !d.c || d.c.length < 20) return null;
+    if (!d) { console.log(`MA ${symbol}: no Finnhub response`); return null; }
+    if (d.s !== "ok") { console.log(`MA ${symbol}: status=${d.s}`); return null; }
+    if (!d.c || d.c.length < 20) { console.log(`MA ${symbol}: only ${d.c?.length} candles`); return null; }
 
     const closes = d.c;
     const n      = closes.length;
+    console.log(`MA ${symbol}: ${n} candles received`);
 
-    // Calculate each MA from the most recent closes
     const calcMA = (period) => {
       if (n < period) return null;
       const slice = closes.slice(n - period);
@@ -280,12 +290,14 @@ async function getMovingAverages(symbol) {
       ma200,
       ma_label:   interpretation.label,
       ma_signals: interpretation.signals,
-      // Distance from each MA (%)
       pct_from_ma20:  ma20  ? Math.round(((currentPrice - ma20)  / ma20)  * 10000) / 100 : null,
       pct_from_ma50:  ma50  ? Math.round(((currentPrice - ma50)  / ma50)  * 10000) / 100 : null,
       pct_from_ma200: ma200 ? Math.round(((currentPrice - ma200) / ma200) * 10000) / 100 : null,
     };
-  } catch { return null; }
+  } catch (err) {
+    console.error(`MA ${symbol} error:`, err.message);
+    return null;
+  }
 }
 
 // ============================================
@@ -807,12 +819,15 @@ LOW=$0.10-$3, MID=$3.01-$50, HIGH=$50.01+. Real US tickers only.`,
     }
 
     const fallback = {
-      low:  ["SNDL", "CLOV", "TELL", "HIMS", "GSAT", "SENS"],
-      mid:  ["PLTR", "SOFI", "HOOD", "RIVN", "NIO",  "SNAP"],
-      high: ["NVDA", "AAPL", "MSFT", "TSLA", "META", "AMD"],
+      low:  ["SNDL", "CLOV", "TELL", "HIMS", "GSAT", "SENS", "BNGO", "IDEX", "NNDM", "ZOM"],
+      mid:  ["PLTR", "SOFI", "HOOD", "RIVN", "NIO",  "SNAP", "PINS", "RBLX", "DKNG", "CHPT"],
+      high: ["NVDA", "AAPL", "MSFT", "TSLA", "META", "AMD",  "GOOGL", "AMZN", "NFLX", "CRM"],
     };
     for (const tier of ["low", "mid", "high"]) {
-      if (candidates[tier].length < 4) candidates[tier] = fallback[tier];
+      if (candidates[tier].length < 4) {
+        console.log(`Tier ${tier} had only ${candidates[tier].length} candidates — using fallback`);
+        candidates[tier] = fallback[tier];
+      }
     }
 
     const results = { low: [], mid: [], high: [] };
@@ -913,7 +928,11 @@ Return ONLY JSON: [{"ticker":"","score":0,"buy_price":0,"sell_price":0,"risk":""
           if (gem.risk)       stock.risk_flag  = gem.risk;
         }
 
-        delete stock.stop_price; // Removed per user request
+        // Force price range so low_range is always lower number
+        const priceRange = fixPriceRange(stock.buy_price, stock.sell_price);
+        stock.buy_price  = priceRange.low_range;
+        stock.sell_price = priceRange.high_range;
+        delete stock.stop_price;
         stock.tier        = tier;
         stock.is_hot_pick = stock.score >= 95;
         stock.updated_at  = new Date().toISOString();
@@ -1232,6 +1251,32 @@ app.post("/surge-check", async (req, res) => {
 });
 
 // ============================================
+// INDEXES — Always-on S&P500, Nasdaq, Dow, VIX
+// ============================================
+app.get("/indexes", async (req, res) => {
+  try {
+    const [sp500, nasdaq, dow, vix] = await Promise.all([
+      getQuote("^GSPC"),
+      getQuote("^IXIC"),
+      getQuote("^DJI"),
+      getQuote("^VIX"),
+    ]);
+    return res.json({
+      sp500:  sp500  ? { price: sp500.current_price,  change_pct: sp500.change_percent,  change: sp500.change  } : null,
+      nasdaq: nasdaq ? { price: nasdaq.current_price, change_pct: nasdaq.change_percent, change: nasdaq.change } : null,
+      dow:    dow    ? { price: dow.current_price,    change_pct: dow.change_percent,    change: dow.change    } : null,
+      vix:    vix    ? { price: vix.current_price,    change_pct: vix.change_percent,    change: vix.change,
+        note: vix.current_price < 15 ? "Low fear" :
+              vix.current_price < 20 ? "Normal volatility" :
+              vix.current_price < 30 ? "Elevated fear" : "High fear" } : null,
+      updated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "Index fetch failed", details: err.message });
+  }
+});
+
+// ============================================
 // LATEST RESULTS
 // ============================================
 app.get("/latest", (req, res) => {
@@ -1308,4 +1353,3 @@ async function refreshPricesInBackground() {
 // Start the 30-second background refresh
 setInterval(refreshPricesInBackground, 30000);
 console.log("Background price refresh armed — every 30 seconds during market hours");
-

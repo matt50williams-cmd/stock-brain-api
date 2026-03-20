@@ -1253,3 +1253,59 @@ app.listen(port, () => {
   console.log(`Market: Full outlook with indexes + VIX + briefing`);
   console.log(`Endpoints: /check-market /research-stock /add-stock /light-check /surge-check /scheduled-light-check /latest /market-outlook /price/:ticker /prices`);
 });
+
+// ============================================
+// BACKGROUND PRICE REFRESH — 30 sec during market hours
+// One Finnhub call per stock regardless of user count
+// ============================================
+function isMarketHours() {
+  const now = new Date();
+  const day = now.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const timeUTC = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return timeUTC >= 810 && timeUTC <= 1200; // 13:30-20:00 UTC = 6:30am-1pm PT
+}
+
+async function refreshPricesInBackground() {
+  if (!lastScanResults.all || lastScanResults.all.length === 0) return;
+  if (!isMarketHours()) return;
+  try {
+    const tickers = lastScanResults.all.map((s) => s.ticker).filter(Boolean);
+    const updatedPrices = {};
+    for (const ticker of tickers) {
+      try {
+        await delay(200);
+        const quote = await getQuote(ticker);
+        if (quote) updatedPrices[ticker] = { ...quote, updated_at: new Date().toISOString() };
+      } catch { continue; }
+    }
+    // Update all stocks in memory
+    for (const stock of lastScanResults.all) {
+      if (updatedPrices[stock.ticker]) {
+        stock.current_price  = updatedPrices[stock.ticker].current_price;
+        stock.change         = updatedPrices[stock.ticker].change;
+        stock.change_percent = updatedPrices[stock.ticker].change_percent;
+        stock.price_updated_at = updatedPrices[stock.ticker].updated_at;
+      }
+    }
+    for (const tier of ["low", "mid", "high"]) {
+      for (const stock of (lastScanResults[tier] || [])) {
+        if (updatedPrices[stock.ticker]) {
+          stock.current_price  = updatedPrices[stock.ticker].current_price;
+          stock.change         = updatedPrices[stock.ticker].change;
+          stock.change_percent = updatedPrices[stock.ticker].change_percent;
+          stock.price_updated_at = updatedPrices[stock.ticker].updated_at;
+        }
+      }
+    }
+    lastScanResults.prices_refreshed_at = new Date().toISOString();
+    console.log(`[${new Date().toISOString()}] Prices refreshed for ${tickers.length} stocks`);
+  } catch (err) {
+    console.error("Price refresh error:", err.message);
+  }
+}
+
+// Start the 30-second background refresh
+setInterval(refreshPricesInBackground, 30000);
+console.log("Background price refresh armed — every 30 seconds during market hours");
+

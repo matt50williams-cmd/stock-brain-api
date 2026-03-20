@@ -1256,10 +1256,10 @@ app.post("/surge-check", async (req, res) => {
 // ============================================
 app.get("/indexes", async (req, res) => {
   try {
-    // FMP quote endpoint works for indexes
-    const fetchFMPQuote = async (symbol) => {
+    // Try FMP for real index levels first
+    const fetchFMP = async (symbol) => {
       try {
-        const r = await fetch(`${FMP_BASE}/quote/${symbol}?apikey=${FMP_KEY}`);
+        const r = await fetch(`${FMP_BASE}/quote/${encodeURIComponent(symbol)}?apikey=${FMP_KEY}`);
         if (!r.ok) return null;
         const d = await r.json();
         const q = Array.isArray(d) ? d[0] : d;
@@ -1272,32 +1272,40 @@ app.get("/indexes", async (req, res) => {
       } catch { return null; }
     };
 
-    // Use ETF proxies — these are regular stocks that track the indexes
-    // SPY = S&P 500, QQQ = Nasdaq 100, DIA = Dow Jones, UVXY = VIX proxy
-    const [sp500raw, nasdaqraw, dowraw, vixraw] = await Promise.all([
-      getQuote("SPY"),   // S&P 500 ETF
-      getQuote("QQQ"),   // Nasdaq 100 ETF
-      getQuote("DIA"),   // Dow Jones ETF
-      getQuote("UVXY"),  // VIX volatility ETF
+    // Try real index symbols via FMP
+    let [sp500, nasdaq, dow, vix] = await Promise.all([
+      fetchFMP("^GSPC"),
+      fetchFMP("^IXIC"),
+      fetchFMP("^DJI"),
+      fetchFMP("^VIX"),
     ]);
 
-    // Convert ETF prices to approximate index levels
-    const sp500   = sp500raw   ? { price: Math.round(sp500raw.current_price   * 10) / 10,  change_pct: sp500raw.change_percent,   change: sp500raw.change   } : null;
-    const nasdaq  = nasdaqraw  ? { price: Math.round(nasdaqraw.current_price  * 10) / 10,  change_pct: nasdaqraw.change_percent,  change: nasdaqraw.change  } : null;
-    const dow     = dowraw     ? { price: Math.round(dowraw.current_price     * 10) / 10,  change_pct: dowraw.change_percent,     change: dowraw.change     } : null;
-    const vix     = vixraw     ? { price: Math.round(vixraw.current_price     * 10) / 10,  change_pct: vixraw.change_percent,     change: vixraw.change     } : null;
+    console.log(`FMP indexes: SP500=${sp500?.price} NASDAQ=${nasdaq?.price} DOW=${dow?.price} VIX=${vix?.price}`);
 
-    const vixNote = vix ? (
-      vix.price < 15 ? "Low fear — calm market" :
-      vix.price < 20 ? "Normal volatility" :
-      vix.price < 30 ? "Elevated fear — caution" :
-      "High fear — volatile market"
+    // Fallback to ETFs for pct change if FMP fails
+    if (!sp500 || !nasdaq || !dow) {
+      const [spy, qqq, dia] = await Promise.all([
+        getQuote("SPY"), getQuote("QQQ"), getQuote("DIA")
+      ]);
+      if (!sp500 && spy) sp500 = { price: null, change_pct: spy.change_percent, change: spy.change };
+      if (!nasdaq && qqq) nasdaq = { price: null, change_pct: qqq.change_percent, change: qqq.change };
+      if (!dow && dia) dow = { price: null, change_pct: dia.change_percent, change: dia.change };
+    }
+
+    // For VIX use VIXY which closely tracks real VIX (~1:1 price relationship)
+    if (!vix) {
+      const vixy = await getQuote("VIXY");
+      if (vixy) vix = { price: Math.round(vixy.current_price * 100) / 100, change_pct: vixy.change_percent, change: vixy.change };
+    }
+
+    const vixNote = vix?.price ? (
+      vix.price < 15 ? "Low fear" :
+      vix.price < 20 ? "Normal" :
+      vix.price < 30 ? "Elevated fear" : "High fear"
     ) : "";
 
     return res.json({
-      sp500,
-      nasdaq,
-      dow,
+      sp500, nasdaq, dow,
       vix: vix ? { ...vix, note: vixNote } : null,
       updated_at: new Date().toISOString(),
     });

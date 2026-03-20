@@ -1252,23 +1252,45 @@ app.post("/surge-check", async (req, res) => {
 
 // ============================================
 // INDEXES — Always-on S&P500, Nasdaq, Dow, VIX
+// Uses FMP for index data (more reliable than Finnhub for indexes)
 // ============================================
 app.get("/indexes", async (req, res) => {
   try {
+    // FMP quote endpoint works for indexes
+    const fetchFMPQuote = async (symbol) => {
+      try {
+        const r = await fetch(`${FMP_BASE}/quote/${symbol}?apikey=${FMP_KEY}`);
+        if (!r.ok) return null;
+        const d = await r.json();
+        const q = Array.isArray(d) ? d[0] : d;
+        if (!q || !q.price) return null;
+        return {
+          price:      Math.round(q.price * 100) / 100,
+          change_pct: Math.round((q.changesPercentage || 0) * 100) / 100,
+          change:     Math.round((q.change || 0) * 100) / 100,
+        };
+      } catch { return null; }
+    };
+
     const [sp500, nasdaq, dow, vix] = await Promise.all([
-      getQuote("^GSPC"),
-      getQuote("^IXIC"),
-      getQuote("^DJI"),
-      getQuote("^VIX"),
+      fetchFMPQuote("%5EGSPC"),  // ^GSPC = S&P 500
+      fetchFMPQuote("%5EIXIC"),  // ^IXIC = Nasdaq
+      fetchFMPQuote("%5EDJI"),   // ^DJI  = Dow Jones
+      fetchFMPQuote("%5EVIX"),   // ^VIX  = VIX
     ]);
+
+    const vixNote = vix ? (
+      vix.price < 15 ? "Low fear — calm market" :
+      vix.price < 20 ? "Normal volatility" :
+      vix.price < 30 ? "Elevated fear — caution" :
+      "High fear — volatile market"
+    ) : "";
+
     return res.json({
-      sp500:  sp500  ? { price: sp500.current_price,  change_pct: sp500.change_percent,  change: sp500.change  } : null,
-      nasdaq: nasdaq ? { price: nasdaq.current_price, change_pct: nasdaq.change_percent, change: nasdaq.change } : null,
-      dow:    dow    ? { price: dow.current_price,    change_pct: dow.change_percent,    change: dow.change    } : null,
-      vix:    vix    ? { price: vix.current_price,    change_pct: vix.change_percent,    change: vix.change,
-        note: vix.current_price < 15 ? "Low fear" :
-              vix.current_price < 20 ? "Normal volatility" :
-              vix.current_price < 30 ? "Elevated fear" : "High fear" } : null,
+      sp500,
+      nasdaq,
+      dow,
+      vix: vix ? { ...vix, note: vixNote } : null,
       updated_at: new Date().toISOString(),
     });
   } catch (err) {
@@ -1353,4 +1375,3 @@ async function refreshPricesInBackground() {
 // Start the 30-second background refresh
 setInterval(refreshPricesInBackground, 30000);
 console.log("Background price refresh armed — every 30 seconds during market hours");
-

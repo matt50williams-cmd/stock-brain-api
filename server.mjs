@@ -1,6 +1,7 @@
 import express from "express";
 import dotenv from "dotenv";
 import OpenAI from "openai";
+import { readFileSync, writeFileSync, existsSync } from "fs";
 
 dotenv.config();
 
@@ -488,9 +489,34 @@ async function collectStockData(symbol) {
 }
 
 // ============================================
-// IN-MEMORY STORAGE
+// IN-MEMORY STORAGE + FILE PERSISTENCE
+// Saves to disk so data survives Render restarts
 // ============================================
-let lastScanResults = { low: [], mid: [], high: [], all: [], updated_at: null };
+const CACHE_FILE = "/tmp/last_scan_results.json";
+
+function saveScanResults(results) {
+  try {
+    writeFileSync(CACHE_FILE, JSON.stringify(results));
+    console.log(`Scan results saved to disk at ${new Date().toISOString()}`);
+  } catch (err) {
+    console.error("Failed to save scan results:", err.message);
+  }
+}
+
+function loadScanResults() {
+  try {
+    if (existsSync(CACHE_FILE)) {
+      const data = JSON.parse(readFileSync(CACHE_FILE, "utf8"));
+      console.log(`Loaded cached scan results from disk — updated_at: ${data.updated_at}`);
+      return data;
+    }
+  } catch (err) {
+    console.error("Failed to load cached results:", err.message);
+  }
+  return { low: [], mid: [], high: [], all: [], updated_at: null };
+}
+
+let lastScanResults = loadScanResults();
 
 // ============================================
 // HEALTH CHECK
@@ -960,12 +986,13 @@ Return ONLY JSON: [{"ticker":"","score":0,"buy_price":0,"sell_price":0,"risk":""
       }
     }
 
-    // Save to memory
+    // Save to memory AND disk so it survives restarts
     lastScanResults = {
       low: results.low, mid: results.mid, high: results.high,
       all: allStocks, hot_picks: hotPicks,
       updated_at: new Date().toISOString(),
     };
+    saveScanResults(lastScanResults);
 
     return res.json({
       market_outlook:   marketOutlook,

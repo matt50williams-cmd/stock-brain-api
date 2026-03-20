@@ -1272,12 +1272,20 @@ app.get("/indexes", async (req, res) => {
       } catch { return null; }
     };
 
-    const [sp500, nasdaq, dow, vix] = await Promise.all([
-      fetchFMPQuote("%5EGSPC"),  // ^GSPC = S&P 500
-      fetchFMPQuote("%5EIXIC"),  // ^IXIC = Nasdaq
-      fetchFMPQuote("%5EDJI"),   // ^DJI  = Dow Jones
-      fetchFMPQuote("%5EVIX"),   // ^VIX  = VIX
+    // Use ETF proxies — these are regular stocks that track the indexes
+    // SPY = S&P 500, QQQ = Nasdaq 100, DIA = Dow Jones, UVXY = VIX proxy
+    const [sp500raw, nasdaqraw, dowraw, vixraw] = await Promise.all([
+      getQuote("SPY"),   // S&P 500 ETF
+      getQuote("QQQ"),   // Nasdaq 100 ETF
+      getQuote("DIA"),   // Dow Jones ETF
+      getQuote("UVXY"),  // VIX volatility ETF
     ]);
+
+    // Convert ETF prices to approximate index levels
+    const sp500   = sp500raw   ? { price: Math.round(sp500raw.current_price   * 10) / 10,  change_pct: sp500raw.change_percent,   change: sp500raw.change   } : null;
+    const nasdaq  = nasdaqraw  ? { price: Math.round(nasdaqraw.current_price  * 10) / 10,  change_pct: nasdaqraw.change_percent,  change: nasdaqraw.change  } : null;
+    const dow     = dowraw     ? { price: Math.round(dowraw.current_price     * 10) / 10,  change_pct: dowraw.change_percent,     change: dowraw.change     } : null;
+    const vix     = vixraw     ? { price: Math.round(vixraw.current_price     * 10) / 10,  change_pct: vixraw.change_percent,     change: vixraw.change     } : null;
 
     const vixNote = vix ? (
       vix.price < 15 ? "Low fear — calm market" :
